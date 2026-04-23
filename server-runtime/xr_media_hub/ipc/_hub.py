@@ -21,7 +21,7 @@ Enforcement:
   • send_return_audio / send_return_data validate that the target participant
     is currently connected; unknown targets are dropped with a warning.
   • Return-traffic topics (return_audio.*, return_data.*) are connector-only;
-    ConsumerEndpoint's default subscription excludes them.
+    ProcessorEndpoint's default subscription excludes them.
 
 Frame callbacks receive a SlotView (zero-copy memoryview into the originating
 connector's ring buffer). The slot is released after ALL frame callbacks
@@ -205,6 +205,12 @@ class HubEndpoint:
             for cb in self._control_cbs:
                 await cb(msg)
             await self._pub.send_multipart([TOPIC_CONTROL, encode(MsgType.CONTROL, msg)])
+
+        elif type_id == MsgType.RETURN_AUDIO:
+            await self.send_return_audio(msg)
+
+        elif type_id == MsgType.RETURN_DATA:
+            await self.send_return_data(msg)
 
         else:
             log.warning("Unknown message type %d — ignored", type_id)

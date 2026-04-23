@@ -60,6 +60,14 @@ export class StreamSession {
    */
   onDataReceived = null;
 
+  /**
+   * Called when an agent publishes a status update.
+   * Common values: `"idle"`, `"processing"`.
+   *
+   * @type {((status: string) => void) | null}
+   */
+  onAgentStatus = null;
+
   // ── Constructor ─────────────────────────────────────────────────────────────
 
   /**
@@ -157,8 +165,16 @@ export class StreamSession {
     await this.#backend.stopAudio();
   }
 
-  async startCamera() {
-    await this.#backend.startCamera();
+  /**
+   * Captures the local camera and publishes it.
+   *
+   * @param {import('./Config/CameraConfig.js').CameraConfig} [cameraConfig]
+   *   Optional override. When `cameraConfig.deviceId` is set the exact device
+   *   is selected; otherwise falls back to the `facingMode` from session config.
+   * @returns {Promise<void>}
+   */
+  async startCamera(cameraConfig) {
+    await this.#backend.startCamera(cameraConfig);
   }
 
   /**
@@ -205,6 +221,10 @@ export class StreamSession {
 
     this.#backend.onDataReceived = (data) => {
       this.onDataReceived?.(data);
+    };
+
+    this.#backend.onAgentStatus = (status) => {
+      this.onAgentStatus?.(status);
     };
   }
 }

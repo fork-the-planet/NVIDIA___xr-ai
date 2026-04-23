@@ -29,7 +29,10 @@ Video frame access is two-step:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import time
 from typing import Awaitable, Callable
 
 import zmq
@@ -50,6 +53,9 @@ ParticipantCallback = Callable[[ParticipantEvent], Awaitable[None]]
 _DEFAULT_TOPICS: tuple[bytes, ...] = (
     b"video", b"video_data", b"audio", b"data", b"participant", b"control",
 )
+
+# Reserved topic for internal SDK status messages — not forwarded to app callbacks.
+AGENT_STATUS_TOPIC = "_agent.status"
 
 _FRAME_REQUEST_TIMEOUT = 1.0  # seconds before request_frame() gives up
 
@@ -123,6 +129,39 @@ class ProcessorEndpoint:
     async def send_return_audio(self, chunk: AudioChunk) -> None:
         await self._push.send(encode(MsgType.RETURN_AUDIO, chunk))
 
+    async def set_status(self, status: str,
+                         participant_id: str | None = None) -> None:
+        """
+        Publish agent status to connected clients via the internal SDK channel.
+
+        The status is delivered on the reserved LiveKit topic ``_agent.status``
+        and is intercepted client-side by the StreamKit SDK — it never surfaces
+        as a raw ``onDataReceived`` message.
+
+        Parameters
+        ----------
+        status :
+            Arbitrary status string.  Conventional values: ``"idle"``,
+            ``"processing"``.
+        participant_id :
+            Target participant.  If *None*, broadcasts to every participant
+            currently in ``connected_participants``.
+        """
+        payload = json.dumps({"status": status}).encode()
+        pts_us  = int(time.time() * 1_000_000)
+        targets = (
+            [participant_id]
+            if participant_id is not None
+            else list(self._participants)
+        )
+        for pid in targets:
+            await self.send_return_data(DataMessage(
+                participant_id=pid,
+                topic=AGENT_STATUS_TOPIC,
+                pts_us=pts_us,
+                data=payload,
+            ))
+
     async def request_frame(self, signal: FrameSignal,
                             timeout: float = _FRAME_REQUEST_TIMEOUT) -> FrameData | None:
         """
@@ -184,30 +223,43 @@ class ProcessorEndpoint:
     async def _dispatch(self, type_id: int, msg) -> None:
         if type_id == MsgType.FRAME_SIGNAL:
             for cb in self._frame_cbs:
-                await cb(msg)
+                self._spawn(cb(msg))
         elif type_id == MsgType.FRAME_DATA:
+            # Resolve pending request_frame() futures synchronously so they can
+            # proceed as soon as the event loop next runs their awaiting coroutine.
             key = (msg.participant_id, msg.track_id)
             waiters = self._pending.pop(key, [])
             for fut in waiters:
                 if not fut.done():
                     fut.set_result(msg)
             for cb in self._frame_data_cbs:
-                await cb(msg)
+                self._spawn(cb(msg))
         elif type_id == MsgType.AUDIO_CHUNK:
             for cb in self._audio_cbs:
-                await cb(msg)
+                self._spawn(cb(msg))
         elif type_id == MsgType.DATA_MESSAGE:
             for cb in self._data_cbs:
-                await cb(msg)
+                self._spawn(cb(msg))
         elif type_id == MsgType.PARTICIPANT_EVENT:
+            # Update participant set before spawning callbacks.
             if msg.joined:
                 self._participants.add(msg.participant_id)
             else:
                 self._participants.discard(msg.participant_id)
             for cb in self._participant_cbs:
-                await cb(msg)
+                self._spawn(cb(msg))
         else:
             log.debug("Unhandled message type %d on processor endpoint", type_id)
+
+    @staticmethod
+    def _spawn(coro) -> None:
+        t = asyncio.create_task(coro)
+        def _on_done(t: asyncio.Task) -> None:
+            if not t.cancelled() and (exc := t.exception()):
+                log.critical("Unhandled error in processor callback — crashing",
+                             exc_info=exc)
+                os._exit(1)
+        t.add_done_callback(_on_done)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 

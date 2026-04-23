@@ -6,6 +6,7 @@ Do not run this directly.
 
 What this process does:
     - Echoes every audio chunk back to its originating participant.
+    - Echoes every data message back to its originating participant.
     - Sends a JSON stats ping (topic "agent.stats") every 5 s per participant.
 """
 from __future__ import annotations
@@ -74,6 +75,7 @@ class EchoAgent:
         pid = msg.participant_id
         self._data_msgs[pid] += 1
         log.info("data from %r  topic=%r  bytes=%d", pid, msg.topic, len(msg.data))
+        await self._ep.send_return_data(msg)
 
     async def _on_participant(self, event: ParticipantEvent) -> None:
         pid = event.participant_id

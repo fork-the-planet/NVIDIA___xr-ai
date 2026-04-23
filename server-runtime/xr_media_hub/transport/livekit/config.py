@@ -42,6 +42,13 @@ class LiveKitConnectorConfig:
     hub_push_addr: str = "ipc:///tmp/xr_hub_in"
     hub_sub_addr:  str = "ipc:///tmp/xr_hub_pub"
 
+    # ── Web server (serves a static web client + /token endpoint) ────────────
+    enable_web_server: bool = False
+    web_server_host:   str  = "0.0.0.0"
+    web_server_port:   int  = 8080
+    # Absolute path to the web client directory. Set via xr_media_hub.yaml.
+    web_client_dir:    str  = ""
+
     # ── Shared-memory ring buffer ──────────────────────────────────────────────
     shm_num_slots:       int = 10
     shm_max_frame_bytes: int = 12_441_600   # 4K NV12

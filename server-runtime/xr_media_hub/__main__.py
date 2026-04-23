@@ -10,8 +10,9 @@ import asyncio
 import logging
 import signal
 
+from xr_media_hub._config_loader import load_config
 from xr_media_hub.ipc import AudioChunk, HubEndpoint, ParticipantEvent, SlotView
-from xr_media_hub.transport.livekit import LiveKitConnector, LiveKitConnectorConfig, make_client_token
+from xr_media_hub.transport.livekit import LiveKitConnector, make_client_token
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -44,14 +45,17 @@ async def main() -> None:
     hub.on_audio(on_audio)
     hub.on_participant(on_participant)
 
-    cfg = LiveKitConnectorConfig()
+    cfg = load_config()
     connector = LiveKitConnector(cfg)
     await connector.start()
 
     token = make_client_token(cfg, identity="ios-client")
     print(f"\n  LiveKit URL : ws://0.0.0.0:{cfg.lk_port_ws}")
     print(f"  Room        : {cfg.room_name}")
-    print(f"  Token       : {token}\n")
+    print(f"  Token       : {token}")
+    if cfg.enable_web_server:
+        print(f"  Web client  : http://localhost:{cfg.web_server_port}")
+    print()
 
     stop = asyncio.Event()
     loop = asyncio.get_event_loop()

@@ -25,7 +25,7 @@ final class AppModel {
     var tokenServerURL: String = ""
     var identity: String = "ios-client"
 
-    // MARK: - Media settings
+    // MARK: - Audio settings
 
     var audioMode: AudioConfig.MicrophoneMode = .voiceProcessing
 
@@ -33,6 +33,7 @@ final class AppModel {
 
     var session: StreamSession?
     var connectionState: ConnectionState = .disconnected
+    var isAudioActive = false
     var isCameraActive = false
     var receivedMessages: [ReceivedMessage] = []
     var lastError: String?
@@ -44,33 +45,26 @@ final class AppModel {
         receivedMessages.removeAll()
 
         let portNumber = Int(port) ?? 7880
-
-        // Mirror web client behaviour: if neither token nor tokenServerURL is
-        // provided, fall back to http://<host>:8080/token (the server's built-in
-        // token endpoint served alongside the web client).
-        let effectiveTokenURL: URL?
-        if !tokenServerURL.isEmpty {
-            effectiveTokenURL = URL(string: tokenServerURL)
-        } else if token.isEmpty {
-            effectiveTokenURL = URL(string: "http://\(host):8080/token")
-        } else {
-            effectiveTokenURL = nil
-        }
-
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTokenURL = tokenServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTokenURL = trimmedTokenURL.isEmpty
+            ? URL(string: "http://\(host):8080/token")
+            : URL(string: trimmedTokenURL)
         let lkConfig = LiveKitConfig(
             host: host,
             port: portNumber,
-            token: token.isEmpty ? nil : token,
-            tokenURL: effectiveTokenURL
+            token: trimmedToken.isEmpty ? nil : trimmedToken,
+            tokenURL: resolvedTokenURL
         )
 
         let newSession = StreamSession(.liveKit(lkConfig))
 
-        // Wire callbacks before connecting.
         newSession.onConnectionStateChanged = { [weak self] state in
             self?.connectionState = state
-            // Camera is no longer active after disconnect.
-            if state == .disconnected { self?.isCameraActive = false }
+            if state == .disconnected {
+                self?.isAudioActive = false
+                self?.isCameraActive = false
+            }
         }
         newSession.onDataReceived = { [weak self] data in
             let text = String(data: data, encoding: .utf8) ?? "[\(data.count) bytes binary]"
@@ -79,15 +73,11 @@ final class AppModel {
 
         session = newSession
 
-        let config = SessionConfig(
-            audio: AudioConfig(mode: audioMode),
-            identity: identity
-        )
-
         do {
-            try await newSession.connect(config: config)
+            try await newSession.connect(config: SessionConfig(identity: identity))
         } catch {
             lastError = error.localizedDescription
+            await newSession.disconnect()
             session = nil
         }
     }
@@ -96,7 +86,28 @@ final class AppModel {
         await session?.disconnect()
         session = nil
         connectionState = .disconnected
+        isAudioActive = false
         isCameraActive = false
+    }
+
+    // MARK: - Audio
+
+    func startAudio() async {
+        do {
+            try await session?.startAudio(config: AudioConfig(mode: audioMode))
+            isAudioActive = true
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func stopAudio() async {
+        do {
+            try await session?.stopAudio()
+        } catch {
+            lastError = error.localizedDescription
+        }
+        isAudioActive = false
     }
 
     // MARK: - Camera

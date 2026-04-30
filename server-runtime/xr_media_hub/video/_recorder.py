@@ -4,13 +4,27 @@ NVENC video recorder for XR-Media-Hub.
 Records incoming video frames per participant to H.264 Annex B chunk files.
 Each chunk starts with SPS+PPS+IDR and is independently decodable.
 
+Storage backend
+---------------
+Defaults to a tmpfs path (``/dev/shm/xr-ai/recordings``) so chunk writes
+go to RAM, not disk. The hub holds at most ``max_total_bytes`` (default
+500 MB) of chunks across all participants combined; the oldest chunks
+are evicted FIFO when the budget is exceeded.
+
 On-disk layout
 --------------
-    <out_dir>/<participant_id>/
+    <out_dir>/<dir_name>/
+        .identity         — raw participant identity (utf-8, one line)
         <start_us>.264    — raw H.264 Annex B, starts with IDR
         <start_us>.json   — chunk metadata sidecar
 
-Sidecar JSON keys:
+``<dir_name>`` is ``_safe_name(participant_id)``; if two distinct raw
+identities collide on the same safe name, the second one gets a counter
+suffix (``alice_home`` then ``alice_home_2``…). The ``.identity`` file
+is the source of truth for the raw name; downstream consumers should
+prefer it over the directory name.
+
+Per-chunk sidecar JSON keys:
     start_us    int   chunk start time (Unix µs, same as filename stem)
     end_us      int   chunk end time (Unix µs, written when chunk is closed)
     num_frames  int   encoded frames in this chunk
@@ -18,8 +32,9 @@ Sidecar JSON keys:
     height      int   frame height in pixels
     size_bytes  int   .264 file size
 
-The video MCP server reads this directory directly — the hub exposes no HTTP API
-for video.
+The video MCP server reads this directory directly for historical
+queries. Latest-frame queries use a separate path: video-mcp connects
+to the hub as a ``ProcessorEndpoint`` and pulls live frames over IPC.
 """
 from __future__ import annotations
 
@@ -39,14 +54,20 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Default chunk root. /dev/shm is tmpfs on Linux (auto-mounted at boot),
+# so writes here cost RAM bandwidth, not disk IO.
+_DEFAULT_OUT_DIR     = "/dev/shm/xr-ai/recordings"
+_DEFAULT_MAX_BYTES   = 500 * 1024 * 1024   # 500 MB across all participants
+
+
 @dataclass
 class VideoRecorderConfig:
-    out_dir:      str   = "/tmp/xr_recordings"
-    chunk_frames: int   = 30        # frames per chunk (1 s at 30 fps)
-    max_chunks:   int   = 300       # max chunks retained per participant (0 = unlimited)
-    sample_fps:   float = 30.0
-    bitrate:      int   = 4_000_000
-    gpu_id:       int   = 0
+    out_dir:         str   = _DEFAULT_OUT_DIR
+    chunk_frames:    int   = 30                  # frames per chunk (1 s at 30 fps)
+    max_total_bytes: int   = _DEFAULT_MAX_BYTES  # global cap; FIFO eviction (0 = unlimited)
+    sample_fps:      float = 30.0
+    bitrate:         int   = 4_000_000
+    gpu_id:          int   = 0
 
 
 @dataclass
@@ -62,7 +83,6 @@ class _TrackEncoder:
     last_ts:        float          = 0.0
 
 
-
 class VideoRecorder:
     def __init__(self, cfg: VideoRecorderConfig) -> None:
         try:
@@ -76,9 +96,12 @@ class VideoRecorder:
 
         self._cfg          = cfg
         self._out_dir      = Path(cfg.out_dir)
+        self._out_dir.mkdir(parents=True, exist_ok=True)
         self._encoders:    dict[tuple[str, str], _TrackEncoder] = {}
         self._lock         = threading.Lock()
         self._min_interval = 1.0 / max(cfg.sample_fps, 1.0)
+        # Lock around global prune so two chunk-flushes can't double-evict.
+        self._prune_lock   = threading.Lock()
 
     # ── hub callback ──────────────────────────────────────────────────────────
 
@@ -148,11 +171,10 @@ class VideoRecorder:
         enc.chunk_frames   = 0
 
     def _make_track(self, pid: str, tid: str, width: int, height: int) -> _TrackEncoder:
-        out_dir = self._out_dir / _safe_name(pid)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = _resolve_or_create_subdir(self._out_dir, pid)
         encoder = self._create_encoder(width, height)
-        log.info("recorder  new track  pid=%r  track=%r  %dx%d  bitrate=%d",
-                 pid, tid, width, height, self._cfg.bitrate)
+        log.info("recorder  new track  pid=%r  dir=%s  track=%r  %dx%d  bitrate=%d",
+                 pid, out_dir.name, tid, width, height, self._cfg.bitrate)
         return _TrackEncoder(
             encoder=encoder, out_dir=out_dir,
             width=width, height=height,
@@ -195,15 +217,33 @@ class VideoRecorder:
         log.info("recorder  chunk  %s  %d frames  %d bytes",
                  h264_path.name, enc.chunk_frames, len(data))
         enc.chunk_buf.clear()
-        self._prune(enc.out_dir)
+        self._prune_by_total_bytes()
 
-    def _prune(self, out_dir: Path) -> None:
-        if not self._cfg.max_chunks:
+    def _prune_by_total_bytes(self) -> None:
+        """Keep total .264 chunk size under ``max_total_bytes`` across every
+        participant directory. FIFO eviction by chunk start_us."""
+        cap = self._cfg.max_total_bytes
+        if cap <= 0:
             return
-        chunks = sorted(out_dir.glob("*.264"))
-        for old in chunks[: max(0, len(chunks) - self._cfg.max_chunks)]:
-            old.unlink(missing_ok=True)
-            old.with_suffix(".json").unlink(missing_ok=True)
+        with self._prune_lock:
+            chunks: list[tuple[int, Path]] = []
+            for pid_dir in self._out_dir.iterdir():
+                if not pid_dir.is_dir():
+                    continue
+                for c in pid_dir.glob("*.264"):
+                    try:
+                        chunks.append((int(c.stem), c))
+                    except ValueError:
+                        continue
+            chunks.sort()  # oldest first
+            total = sum(c.stat().st_size for _, c in chunks)
+            for _, c in chunks:
+                if total <= cap:
+                    break
+                size = c.stat().st_size
+                c.unlink(missing_ok=True)
+                c.with_suffix(".json").unlink(missing_ok=True)
+                total -= size
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -276,3 +316,31 @@ def _rgb24_to_nv12(rgb: np.ndarray, width: int, height: int) -> np.ndarray:
 
 def _safe_name(pid: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in pid)
+
+
+def _resolve_or_create_subdir(root: Path, raw: str) -> Path:
+    """Find or create the per-participant subdirectory for *raw*.
+
+    Disambiguates collisions (two raw identities mapping to the same
+    ``_safe_name``) by appending a counter suffix. Each subdir contains
+    a ``.identity`` file holding the raw identity verbatim — downstream
+    listing tools read it to recover the original name.
+    """
+    safe = _safe_name(raw)
+    suffix = 1
+    while True:
+        name      = safe if suffix == 1 else f"{safe}_{suffix}"
+        candidate = root / name
+        sidecar   = candidate / ".identity"
+        if not candidate.exists():
+            candidate.mkdir(parents=True, exist_ok=False)
+            sidecar.write_text(raw, encoding="utf-8")
+            return candidate
+        if sidecar.exists() and sidecar.read_text(encoding="utf-8") == raw:
+            return candidate
+        # Pre-sidecar legacy dirs: if there's no .identity file and the
+        # raw name already equals safe, claim it (and write the sidecar).
+        if not sidecar.exists() and raw == safe and suffix == 1:
+            sidecar.write_text(raw, encoding="utf-8")
+            return candidate
+        suffix += 1

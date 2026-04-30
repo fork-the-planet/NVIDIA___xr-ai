@@ -235,12 +235,24 @@ async with httpx.AsyncClient() as client:
 - **tts/magpie** loads magpie_tts_multilingual_357m via NeMo TTS in-process.
 - **tts/piper** serves any rhasspy/piper-voices ONNX voice; ~100 ms/sentence on CPU.
   All inference runs in a thread pool so the asyncio loop is never blocked.
-- **transcript-mcp-server** exposes two interfaces on port 8200:
-  - `POST /ingest` — non-MCP HTTP endpoint for workers to push timestamped transcripts.
-  - `/mcp` — FastMCP StreamableHTTP endpoint with tools `query_transcripts` and
-    `list_participants`.  Transcripts persist as JSONL files across server restarts.
-- **video-mcp-server** wraps the hub video query HTTP API (port 8090) as an MCP tool
-  (`query_video`) on port 8210.  Requires hub video recording to be enabled via
+- **transcript-mcp-server** is pure FastMCP at `/mcp` on port 8200.
+  Records are keyed by free-form `source_id` (live participant identity
+  *or* an internal source name like `"agent-vlm"`). Tools:
+  `query_transcripts`, `add_transcript` (worker ingest), `list_sources`,
+  `get_transcript_stats`. Transcripts persist as JSONL alongside a
+  `.identity` sidecar so list/query round-trip raw IDs cleanly even
+  when sanitized filenames collide.
+- **video-mcp-server** is pure FastMCP at `/mcp` on port 8210. Tools:
+  `list_live_participants`, `list_recorded_participants`,
+  `get_video_stats`, `query_video`, `get_latest_frame`,
+  `get_frame_at_time`. `list_live_participants` returns the hub's IPC
+  roster (the only pids `get_latest_frame` will succeed for);
+  `list_recorded_participants` returns raw identities recovered from
+  per-pid `.identity` sidecars in the recordings directory. Reads
+  NVENC chunks from disk for historical queries; connects to the hub
+  as a `ProcessorEndpoint` (`Subscribe.VIDEO`) for live frames.
+  `get_frame_at_time` decodes via NVDEC and returns a PNG path.
+  Requires hub video recording enabled via
   `video_recording.enabled: true` in `xr_media_hub.yaml`.
 - Ports are configurable — avoid conflicts with LiveKit (7880–7882) and hub (8080, 8090).
 - **Sample YAMLs** for each service ship with `cloudxr-agent` or `mcp-agent` as examples.
@@ -607,6 +619,109 @@ but LiveKit itself always runs over plain WebSocket (`ws://`).  This means:
 Significant decisions, in reverse-chronological order. Update this whenever a
 non-trivial architectural or design decision is made so the rationale is
 preserved and not re-litigated.
+
+### 2026-04-30 — Unified MCP IDs: identity sidecars, live vs recorded splits, transcript source_id
+
+The MCP servers had two consistency gaps: (1) `list_*` tools returned
+sanitized filesystem names rather than the original LiveKit identities,
+so a caller round-tripping a value through `list_recording_participants`
+→ `get_latest_frame` could miss; (2) the transcript store named its
+key `participant_id` even though transcripts can come from non-
+participant sources (e.g. an agent's own TTS).
+
+Changes:
+
+- **Recorder + stores write a `.identity` sidecar per source.** The
+  hub's `_recorder.py` writes `<recordings_dir>/<safe>/.identity`;
+  transcript-mcp writes `<transcripts_dir>/<safe>.identity` next to
+  the JSONL. Sidecar contents are the raw caller-supplied ID verbatim.
+  Collisions between distinct raw IDs that happen to share a
+  `_safe_name` get a counter suffix (`alice_home`, `alice_home_2`, …).
+- **List tools return raw IDs.** `list_recorded_participants` (renamed
+  from `list_recording_participants`) and `list_sources` (renamed from
+  `list_participants` on transcript-mcp) read sidecars and return
+  exactly what the writer passed in.
+- **New tool `list_live_participants`** on video-mcp — surfaces
+  `ep.connected_participants` from the ProcessorEndpoint so callers
+  can ask "who's actually live right now?". This is the only set
+  `get_latest_frame` will succeed for.
+- **Transcript-mcp renames `participant_id` → `source_id`** in tool
+  signatures, response keys, and stored identity sidecars. The store
+  treats `source_id` as opaque, allowing agents to write under
+  internal names (`"agent-vlm"`, `"tts"`) alongside live participant
+  records. video-mcp keeps `participant_id` since video really does
+  come from real participants.
+- mcp-agent worker updated to use `source_id` when calling transcript
+  tools.
+
+**Why:** the underlying storage was always string-keyed and didn't
+care, but the API leaked sanitized filenames and overloaded
+"participant" semantics onto things that aren't participants. The
+sidecar lifts the raw name back out cleanly; the rename names the
+field for what it actually is.
+
+### 2026-04-29 — Video recording on tmpfs; video-mcp gains live-frame + frame-at-time
+
+`server-runtime/xr_media_hub/video/_recorder.py`:
+- Default `out_dir` flipped from `/tmp/xr_recordings` (disk) to
+  `/dev/shm/xr-ai/recordings` (tmpfs — RAM-backed). Writes don't touch
+  disk by default.
+- Eviction policy is now **size-based, global**: `max_total_bytes`
+  (default 500 MB) caps total chunk size across all participants.
+  When the cap is exceeded, oldest chunks are evicted FIFO. Replaces
+  the prior per-participant `max_chunks` count.
+
+`agent-mcp-servers/video-mcp/`:
+- Now connects to the hub as a `ProcessorEndpoint` with
+  `filter=Subscribe.VIDEO`. A small `FrameProvider` tracks the most
+  recent `FrameSignal` per pid; pixel bytes are pulled on demand via
+  `request_frame()`. No on-disk side-channel — the live path is
+  entirely IPC-based.
+- New MCP tool `get_latest_frame(participant_id)` — calls into the
+  provider, converts the returned `FrameData` to RGB, writes a PNG to
+  `out_dir`, returns `{path, width, height, timestamp_us, track_id}`.
+- New MCP tool `get_frame_at_time(participant_id, timestamp_us)` —
+  finds the chunk covering the timestamp, decodes it with NVDEC via
+  PyNvVideoCodec, picks the frame closest to the timestamp by linear
+  interpolation across the chunk, encodes PNG, returns `{path, width,
+  height, timestamp_us, chunk_path}`.
+- video-mcp gains `xr-ai-agent`, `PyNvVideoCodec`, `Pillow`, and
+  `numpy` runtime deps. mcp-agent's composed `mcp_server` adopts the
+  same model — owns its own `ProcessorEndpoint` and lifecycle.
+
+**Why:** disk IO was wasted overhead for chunks that almost always get
+evicted within minutes; `/dev/shm` cuts the IO cost to RAM bandwidth
+without changing the file-based interface that the video-mcp uses for
+historical queries. Live frames bypass the chunk store entirely — the
+hub already has the most recent SHM slot held open per (pid, track),
+so a `request_frame()` is a single zero-copy memcpy at the hub plus a
+pixel-format conversion at the consumer.
+
+### 2026-04-29 — MCP servers go pure FastMCP
+
+`transcript-mcp-server`, `video-mcp-server`, and the composed `mcp-server`
+in `agent-samples/mcp-agent/` no longer wrap a FastAPI app. Each runs the
+`FastMCP.http_app(path="/mcp")` Starlette app directly under uvicorn.
+
+- All worker ingress is now an MCP tool call. Transcript ingest is the new
+  `transcript_add_transcript` tool (replaces `POST /ingest`); stats fetches
+  use the existing `transcript_get_transcript_stats` / `video_get_video_stats`
+  tools (replace the `/transcript/stats/{pid}` and `/video/stats/{pid}` REST
+  routes).
+- The composed `mcp-server` no longer reads a `skills:` config block — both
+  sub-servers are always mounted; their per-server config lives at the top
+  level of `mcp_server.yaml` under `transcript:` and `video:`.
+- `/health` is gone. The mcp-agent worker's readiness probe now uses
+  `fastmcp.Client.list_tools()` against `/mcp` to confirm the server is
+  serving (a stronger guarantee than a 200 from `/health` ever was).
+- Drops the `fastapi` and `pydantic` runtime dependencies on transcript-mcp,
+  video-mcp, and the composed mcp-server. Worker gains a `fastmcp>=0.4`
+  dependency.
+
+**Why:** the dual REST + MCP surface had no value once workers got an MCP
+client. Two interfaces meant two contracts to keep in sync, two error-
+handling paths, and two readiness checks. Pure FastMCP is one contract,
+one error model, and a stronger readiness check via `list_tools()`.
 
 ### 2026-04-29 — Participant-keyed agent subscriptions
 

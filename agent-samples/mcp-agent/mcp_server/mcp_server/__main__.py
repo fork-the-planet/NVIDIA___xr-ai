@@ -1,127 +1,107 @@
 """
 Composed MCP server for the mcp-agent example.
 
-Demonstrates FastMCP composition: reads a ``skills`` block from YAML and
-mounts the requested sub-servers into a single FastMCP instance.
+Pure FastMCP — mounts two sub-servers (transcript, video) into a single
+FastMCP instance and serves the StreamableHTTP transport at /mcp. There
+are no REST endpoints; workers use ``fastmcp.Client``.
 
-Available skills
-----------------
-  transcript — stores and queries timestamped speech transcripts
-  video      — queries NVENC-recorded H.264 video chunks from disk
+The video sub-server connects to the hub as a ``ProcessorEndpoint`` to
+serve live latest-frame queries; we manage the endpoint task in the same
+asyncio loop as the uvicorn server.
 
 Config (mcp_server.yaml)
 -------------------------
-    host:  0.0.0.0
-    port:  8200
+    host: 0.0.0.0
+    port: 8200
 
-    skills:
-      transcript:
-        transcripts_dir: /tmp/xr_transcripts/mcp-agent
-      video:
-        recordings_dir:  /tmp/xr_recordings/mcp-agent   # must match hub out_dir
-        out_dir:         /tmp/xr_video_queries/mcp-agent
+    transcript:
+      transcripts_dir: /tmp/xr_transcripts/mcp-agent
 
-HTTP endpoints
---------------
-  POST /ingest                       — worker pushes transcripts (requires transcript skill)
-  GET  /transcript/stats/{pid}       — transcript stats for worker (requires transcript skill)
-  GET  /video/stats/{pid}            — video stats for worker     (requires video skill)
-  GET  /health
-
-MCP endpoint (StreamableHTTP): /mcp
+    video:
+      recordings_dir:  /dev/shm/xr-ai/recordings   # must match hub out_dir
+      out_dir:         /tmp/xr_video_queries/mcp-agent
+      hub_pub:         ipc:///tmp/xr_hub_pub
+      hub_push:        ipc:///tmp/xr_hub_in
+      gpu_id:          0
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import pathlib
 
 import uvicorn
 import yaml
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 from fastmcp import FastMCP
-from pydantic import BaseModel
 
 from transcript_mcp_server import TranscriptStore, build_mcp as build_transcript_mcp
-from video_mcp_server import ChunkStore, build_mcp as build_video_mcp
+from video_mcp_server      import (ChunkStore, FrameProvider,
+                                   build_mcp as build_video_mcp)
+from xr_ai_agent           import ProcessorEndpoint, Subscribe
 
 log = logging.getLogger("mcp_server")
 
 
-class IngestRequest(BaseModel):
-    participant_id: str
-    timestamp_us:   int
-    text:           str
+def _build(cfg: dict) -> tuple[object, ProcessorEndpoint]:
+    """Build the composed FastMCP ASGI app and return it alongside the
+    ProcessorEndpoint that backs live frame queries (caller manages its
+    lifecycle)."""
+    transcript_cfg = cfg.get("transcript", {})
+    video_cfg      = cfg.get("video",      {})
 
+    transcripts_dir = pathlib.Path(transcript_cfg.get("transcripts_dir", "/tmp/xr_transcripts"))
+    recordings_dir  = pathlib.Path(video_cfg.get("recordings_dir",  "/dev/shm/xr-ai/recordings"))
+    out_dir         = pathlib.Path(video_cfg.get("out_dir",         "/tmp/xr_video_queries"))
+    hub_pub         = video_cfg.get("hub_pub",  "ipc:///tmp/xr_hub_pub")
+    hub_push        = video_cfg.get("hub_push", "ipc:///tmp/xr_hub_in")
+    gpu_id          = int(video_cfg.get("gpu_id", 0))
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-def build_app(cfg: dict) -> FastAPI:
-    skills = cfg.get("skills", {})
+    transcripts = TranscriptStore(str(transcripts_dir))
+    chunks      = ChunkStore(recordings_dir)
 
-    # ── skill: transcript ─────────────────────────────────────────────────────
-
-    transcript_store: TranscriptStore | None = None
-    if "transcript" in skills:
-        skill_cfg = skills["transcript"]
-        transcript_store = TranscriptStore(
-            skill_cfg.get("transcripts_dir", "/tmp/xr_transcripts")
-        )
-        log.info("skill transcript  dir=%s", skill_cfg.get("transcripts_dir"))
-
-    # ── skill: video ──────────────────────────────────────────────────────────
-
-    chunk_store: ChunkStore | None = None
-    if "video" in skills:
-        skill_cfg = skills["video"]
-        recordings_dir = pathlib.Path(skill_cfg.get("recordings_dir", "/tmp/xr_recordings"))
-        out_dir        = pathlib.Path(skill_cfg.get("out_dir",        "/tmp/xr_video_queries"))
-        out_dir.mkdir(parents=True, exist_ok=True)
-        chunk_store = ChunkStore(recordings_dir)
-        log.info("skill video  recordings=%s", recordings_dir)
-
-    # ── FastMCP composition ───────────────────────────────────────────────────
+    ep       = ProcessorEndpoint(
+        sub_addr=hub_pub, push_addr=hub_push,
+        filter=Subscribe.VIDEO,
+    )
+    provider = FrameProvider(ep)
 
     mcp = FastMCP("xr-mcp")
-    if transcript_store is not None:
-        mcp.mount(build_transcript_mcp(transcript_store), namespace="transcript")
-    if chunk_store is not None:
-        mcp.mount(build_video_mcp(chunk_store, out_dir), namespace="video")
+    mcp.mount(build_transcript_mcp(transcripts),                          namespace="transcript")
+    mcp.mount(build_video_mcp(chunks, out_dir, provider, gpu_id=gpu_id),  namespace="video")
 
-    # ── FastAPI wrapper ───────────────────────────────────────────────────────
+    return mcp.http_app(path="/mcp"), ep
 
-    app = FastAPI(title="XR MCP Server", docs_url=None, redoc_url=None)
 
-    @app.get("/health")
-    async def health() -> dict:
-        return {"status": "ok", "skills": list(skills)}
-
-    if transcript_store is not None:
-        @app.post("/ingest")
-        async def ingest(req: IngestRequest) -> JSONResponse:
-            if not req.text.strip():
-                raise HTTPException(400, "text must not be empty")
-            transcript_store.append(req.participant_id, req.timestamp_us, req.text)
-            log.info("ingest  pid=%r  ts=%d  %r",
-                     req.participant_id, req.timestamp_us, req.text[:80])
-            return JSONResponse({"ok": True})
-
-        @app.get("/transcript/stats/{participant_id}")
-        async def transcript_stats(participant_id: str) -> JSONResponse:
-            result = transcript_store.stats(participant_id)
-            if result is None:
-                raise HTTPException(404, f"No transcripts for {participant_id!r}")
-            return JSONResponse(result)
-
-    if chunk_store is not None:
-        @app.get("/video/stats/{participant_id}")
-        async def video_stats(participant_id: str) -> JSONResponse:
-            result = chunk_store.stats(participant_id)
-            if result is None:
-                raise HTTPException(404, f"No video chunks for {participant_id!r}")
-            return JSONResponse(result)
-
-    app.mount("/mcp", mcp.http_app())
+def build_app(cfg: dict):
+    """Backwards-compatible entry: returns just the ASGI app (no
+    endpoint lifecycle). Used by tests; production should call
+    ``_build`` and manage the endpoint."""
+    app, _ep = _build(cfg)
     return app
+
+
+async def _serve(cfg: dict) -> None:
+    app, ep = _build(cfg)
+
+    host = cfg.get("host", "0.0.0.0")
+    port = int(cfg.get("port", 8200))
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    ep_task = asyncio.create_task(ep.run(), name="composed_mcp_processor")
+    log.info("xr-mcp-server  port=%d", port)
+    try:
+        await server.serve()
+    finally:
+        ep.stop()
+        ep_task.cancel()
+        try:
+            await ep_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        ep.close()
 
 
 def run() -> None:
@@ -136,13 +116,7 @@ def run() -> None:
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-
-    host = cfg.get("host", "0.0.0.0")
-    port = int(cfg.get("port", 8200))
-
-    app = build_app(cfg)
-    log.info("xr-mcp-server  skills=%s  port=%d", list(cfg.get("skills", {})), port)
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    asyncio.run(_serve(cfg))
 
 
 if __name__ == "__main__":

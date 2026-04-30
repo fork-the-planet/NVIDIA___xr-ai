@@ -12,6 +12,7 @@
 		AA000100000000000000DD03 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000100000000000000CC03 /* ContentView.swift */; };
 		AA000100000000000000DD04 /* ImmersiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000100000000000000CC04 /* ImmersiveView.swift */; };
 		AA000100000000000000DD05 /* StreamKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA000100000000000002CC02 /* StreamKit */; };
+		AA000100000000000000DD06 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA000100000000000000CC08 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		AA000100000000000000CC05 /* StreamKitSample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StreamKitSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000100000000000000CC06 /* StreamKitSample.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = StreamKitSample.entitlements; sourceTree = "<group>"; };
 		AA000100000000000000CC07 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA000100000000000000CC08 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,17 +54,11 @@
 				AA000100000000000000CC02 /* AppModel.swift */,
 				AA000100000000000000CC03 /* ContentView.swift */,
 				AA000100000000000000CC04 /* ImmersiveView.swift */,
+				AA000100000000000000CC08 /* Assets.xcassets */,
 				AA000100000000000000CC06 /* StreamKitSample.entitlements */,
 				AA000100000000000000CC07 /* Info.plist */,
 			);
 			path = App;
-			sourceTree = "<group>";
-		};
-		AA000100000000000000BB04 /* Packages */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Packages;
 			sourceTree = "<group>";
 		};
 		AA000100000000000000BB03 /* Products */ = {
@@ -71,6 +67,13 @@
 				AA000100000000000000CC05 /* StreamKitSample.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AA000100000000000000BB04 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -137,6 +140,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA000100000000000000DD06 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -284,9 +288,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/StreamKitSample.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 6KR3T733EC;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -296,7 +301,9 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nvidia.StreamKitSample;
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=xros*]" = com.nvidia.streamkitsample;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -309,9 +316,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/StreamKitSample.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 6KR3T733EC;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -321,7 +329,9 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nvidia.StreamKitSample;
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=xros*]" = com.nvidia.streamkitsample;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -365,7 +375,6 @@
 			productName = StreamKit;
 		};
 /* End XCSwiftPackageProductDependency section */
-
 	};
 	rootObject = AA000100000000000000AAAA /* Project object */;
 }

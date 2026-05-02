@@ -83,11 +83,14 @@ class TranscriptStore:
     def __init__(self, transcripts_dir: str) -> None:
         self._dir = pathlib.Path(transcripts_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
+        # Resolve once at construction so the safe root can't be swapped
+        # for a symlink (TOCTOU) between subsequent _check calls.
+        self._root = self._dir.resolve()
 
     # ── path resolution ──────────────────────────────────────────────
 
     def _check(self, path: pathlib.Path) -> pathlib.Path:
-        if not path.resolve().is_relative_to(self._dir.resolve()):
+        if not path.resolve().is_relative_to(self._root):
             raise ValueError(f"Path escapes transcript directory: {path}")
         return path
 
@@ -127,14 +130,16 @@ class TranscriptStore:
         if canonical_jsonl.exists():
             if canonical_ident.exists():
                 if canonical_ident.read_text(encoding="utf-8").strip() == source_id.strip():
-                    return self._check(canonical_jsonl)
+                    jsonl = self._check(canonical_jsonl)
+                    return jsonl
             elif source_id == safe:
-                return self._check(canonical_jsonl)
+                jsonl = self._check(canonical_jsonl)
+                return jsonl
         # Slow path: scan sidecars.
         for ident in sorted(self._dir.glob("*.identity")):
             if ident.read_text(encoding="utf-8").strip() == source_id.strip():
-                jsonl = ident.with_suffix(".jsonl")
-                return self._check(jsonl) if jsonl.exists() else None
+                jsonl = self._check(ident.with_suffix(".jsonl"))
+                return jsonl if jsonl.exists() else None
         return None
 
     # ── operations ───────────────────────────────────────────────────

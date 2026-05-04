@@ -6,19 +6,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "simple-vlm-example"
+name = "nemotron-omni-llm-server"
 version = "0.1.0"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "xr-ai-launcher",
+    "vllm>=0.8.0",
     "pyyaml>=6.0",
+    "hf-transfer>=0.1.4",
 ]
 
-[tool.uv.sources]
-xr-ai-launcher = { path = "../../launcher", editable = true }
-
 [project.scripts]
-simple_vlm_example = "simple_vlm_example:run"
+nemotron_omni_llm_server = "nemotron_omni_llm_server.__main__:run"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["simple_vlm_example.py"]
+packages = ["nemotron_omni_llm_server"]

@@ -5,9 +5,9 @@
 # Auto-discovered by the launcher and passed as --config to the worker process.
 
 # Path to models.yaml (resolved relative to this file's directory).
-# Switch to yaml/models.omni.yaml to use Nemotron-Omni on port 8108
+# Switch to models.omni.yaml to use Nemotron-Omni on port 8108
 # instead of Cosmos on port 8100.
-models_yaml: yaml/models.yaml
+models_yaml: models.yaml
 
 # Sent to the VLM whenever the client posts the literal text "ping".
 default_prompt: "Describe what you see."
@@ -33,7 +33,8 @@ frame_max_age_s:      5.0   # frame older than this is considered stale; agent r
 camera_on_timeout_s: 30.0   # give up waiting for a fresh frame after this many seconds
 camera_grace_s:       5.0   # keep camera on this long after a query (avoids restart on follow-ups)
 
-# Voice Activity Detection — tune if STT triggers too early or misses speech.
-silence_threshold: 0.01   # float32 RMS below this is considered silence
+# Voice Activity Detection — Silero VAD (ONNX backend).
+# Tune if STT triggers too early or misses speech.
+silero_threshold:  0.5    # Silero speech-probability gate (0..1); lower = more sensitive
 silence_duration:  0.8    # seconds of silence that ends an utterance
 min_speech:        0.3    # minimum seconds of speech before STT is called

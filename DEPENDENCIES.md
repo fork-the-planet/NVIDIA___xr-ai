@@ -90,6 +90,17 @@ xr-ai-vllm  (utils/xr-ai-vllm/)
     container.  Imported by the four vllm wrappers and by the orchestrator
     `--stop` flow.
 
+xr-ai-vad  (utils/xr-ai-vad/)
+    └── numpy >=1.24
+    └── silero-vad >=5.1  (pulls torch + onnxruntime transitively)
+    Shared per-participant Silero VAD utterance detector for agent workers
+    that ingest microphone audio.  Uses the ONNX backend (no GPU required
+    at runtime).  Consumes raw int16 PCM bytes and emits int16 PCM utterance
+    bytes via an async ``on_utterance`` callback; an optional
+    ``on_speech_start`` hook fires when speech first crosses ``min_speech``
+    for speculative downstream warmup (e.g. start the camera before STT
+    completes).
+
 xr-media-hub  (server-runtime/)
     └── xr-ai-agent  [editable: ../agent-sdk]
     └── pyzmq >=26.0
@@ -170,6 +181,7 @@ xr-ai-tests  (tests/)
     └── xr-media-hub            [editable: ../server-runtime]    (pulls in livekit, livekit-api for the wss /rtc proxy + room-client tests)
     └── xr-ai-launcher          [editable: ../utils/xr-ai-launcher]
     └── xr-ai-logging           [editable: ../utils/xr-ai-logging]
+    └── xr-ai-vad               [editable: ../utils/xr-ai-vad]
     └── xr-ai-vllm              [editable: ../utils/xr-ai-vllm]
     └── transcript-mcp-server   [editable: ../agent-mcp-servers/transcript-mcp]
     └── vlm-mcp-server          [editable: ../agent-mcp-servers/vlm-mcp]
@@ -346,7 +358,7 @@ the latest video frame via streaming VLM and replies with both
 | Sub-project | Package | Internal deps | External deps |
 |---|---|---|---|
 | Orchestrator | `simple-vlm-example` | `xr-ai-launcher` | — |
-| Worker | `simple-vlm-example-worker` | `xr-ai-agent`, `xr-ai-models [editable]` | numpy >=1.24, Pillow >=10.0, pyyaml >=6.0 |
+| Worker | `simple-vlm-example-worker` | `xr-ai-agent`, `xr-ai-models [editable]`, `xr-ai-vad [editable]` | numpy >=1.24, Pillow >=10.0, pyyaml >=6.0 (silero-vad pulled in via xr-ai-vad) |
 
 Worker calls stt-server (8103), vlm-server (8100), and piper-tts-server
 (8105) over HTTP via `xr-ai-models` SDK — no model weights loaded
@@ -379,7 +391,7 @@ forwarding.
 | Sub-project | Package | Internal deps | External deps |
 |---|---|---|---|
 | Orchestrator | `xr-render-demo` | `xr-ai-launcher`, `xr-ai-logging` | — |
-| Worker | `xr-render-demo-worker` | `xr-ai-agent`, `xr-ai-models` [editable], `xr-ai-pipecat` [editable], `xr-ai-logging` [editable] | numpy >=1.24, httpx >=0.27, fastmcp >=0.4, pyyaml >=6.0, silero-vad >=5.1 |
+| Worker | `xr-render-demo-worker` | `xr-ai-agent`, `xr-ai-models` [editable], `xr-ai-pipecat` [editable], `xr-ai-logging` [editable], `xr-ai-vad` [editable] | numpy >=1.24, httpx >=0.27, fastmcp >=0.4, pyyaml >=6.0 (silero-vad pulled in via xr-ai-vad) |
 
 Model endpoints (llm, agent_llm, stt, tts, vlm) are declared in
 `yaml/models.yaml` and loaded via `xr-ai-models` `load_models_config` /

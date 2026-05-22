@@ -9,6 +9,64 @@ Significant decisions, in reverse-chronological order. Update this whenever a
 non-trivial architectural or design decision is made so the rationale is
 preserved and not re-litigated.
 
+### 2026-05-21 — `xr-ai-vad` is Silero-only; `xr-render-demo` migrated
+
+Dropped the adaptive-energy fallback path that shipped in the initial
+`utils/xr-ai-vad/` introduction and migrated `agent-samples/xr-render-demo`
+to use the shared detector.
+
+**Silero-only, no fallback.** The initial cut shipped Silero with an
+adaptive-energy gate kicking in if `silero-vad` failed to load. That extra
+codepath came with its own knobs (`silence_threshold`, `vad_noise_mult`),
+its own state (`_noise_floor`), and silently degraded the worker behaviour
+when something went wrong with the model. The fallback wasn't asked for;
+the detector now raises at construction if the model can't be loaded so the
+failure is loud, and the public surface shrinks to just Silero knobs
+(`silero_threshold`, `silence_duration`, `min_speech`).
+
+**Canonical input is int16 PCM.** Previously `feed()` took float32 LE
+bytes plus an explicit sample count so it matched
+`AudioChunk.data`. Pipecat's `InputAudioRawFrame.audio` is int16 at
+16 kHz, and converting to int16 is the natural buffering format (the
+detector emits int16 in `on_utterance`). The signature is now
+`feed(pcm_int16, sample_rate)`; simple-vlm-example does the
+trivial float32→int16 conversion at the call site.
+
+**`xr-render-demo` migrated.** Its previous bespoke
+`SttProcessor._feed` duplicated the detector loop. It now constructs a
+`VadDetector`, feeds Pipecat's int16 PCM through it, and runs STT +
+filler filtering + `TranscriptionFrame` push from the
+`on_utterance` callback. Both samples now share one Silero implementation
+behind `xr-ai-vad`.
+
+### 2026-05-21 — `utils/xr-ai-vad/` shared Silero VAD utility
+
+Extracted the Silero-VAD utterance detector into a new shared utility
+package and migrated `agent-samples/simple-vlm-example` to use it,
+replacing the worker's inline RMS energy gate.
+
+**Why a shared `utils/` package (not per-sample copies).** Silero VAD
+already exists in two trees on different branches — `xr-render-demo`
+(pipecat-coupled, on main) and `glasses-agent-nat` (clean async API,
+on a separate branch in active dev). Adding it to `simple-vlm-example`
+made a third near-identical copy the obvious next step. The shape is
+small and stable enough (one class, two async callbacks) to live behind
+one API; copies were the wrong default.
+
+**Why `utils/` not `agent-sdk/`.** `agent-sdk/xr-ai-models/` is the
+HTTP-client seam for AI inference services. Local DSP on raw PCM bytes
+doesn't fit there. `utils/xr-ai-vad/` mirrors the shape of
+`utils/xr-ai-logging/`: focused dependency footprint (numpy +
+silero-vad), opt-in via per-sample `[tool.uv.sources]`, no leak into
+samples that don't process voice.
+
+**`on_speech_start` hook added vs. the glasses original.** The previous
+`simple-vlm-example` VAD path fired a speculative camera-warmup the
+moment `speech_s` crossed `min_speech`. The callback-only finalize API
+in the glasses original had no equivalent, so the migration would have
+been a behavior regression. Added a one-shot per-utterance
+`on_speech_start` callback to preserve it.
+
 ### 2026-05-20 — Native StreamKit: `AudioSink` mixin + `CameraConfig::Facing` contract (#134)
 
 Two design decisions in response to partner findings on the native C++

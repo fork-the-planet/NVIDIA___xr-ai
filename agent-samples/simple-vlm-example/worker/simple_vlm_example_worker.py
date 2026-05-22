@@ -27,7 +27,7 @@ Config (simple_vlm_example_worker.yaml — auto-passed by the launcher)
     frame_max_age_s:           2.0   # frames older than this trigger a camera-on request
     camera_on_timeout_s:      15.0   # how long to wait for a fresh frame after startCamera
     camera_grace_s:            5.0   # keep camera on this long after a query (avoids restart on follow-ups)
-    silence_threshold:          0.01  # float32 RMS below which audio is silence
+    silero_threshold:           0.5   # Silero speech probability gate (0..1)
     silence_duration:           0.8   # seconds of silence that ends an utterance
     min_speech:                 0.3   # minimum seconds of speech before STT fires
 """
@@ -50,11 +50,21 @@ _HUB_PUB  = "ipc:///tmp/xr_hub_pub"
 _HUB_PUSH = "ipc:///tmp/xr_hub_in"
 
 
-async def main(cfg: dict, ready_file: pathlib.Path | None = None) -> None:
+async def main(
+    cfg: dict,
+    config_path: pathlib.Path | None = None,
+    ready_file: pathlib.Path | None = None,
+) -> None:
     setup_logging("worker")
 
-    # models_yaml is resolved relative to cwd (the sample root, where the launcher runs).
-    models_yaml_path = cfg.get("models_yaml", "yaml/models.yaml")
+    # Resolve `models_yaml` relative to the worker YAML's parent directory.
+    # Matches the convention used by xr-render-demo (and any future sample)
+    # so all samples behave the same regardless of CWD. The bare default
+    # `"models.yaml"` sits next to the worker yaml in `yaml/`.
+    models_yaml_raw = cfg.get("models_yaml", "models.yaml")
+    models_yaml_path = pathlib.Path(models_yaml_raw)
+    if config_path and not models_yaml_path.is_absolute():
+        models_yaml_path = config_path.parent / models_yaml_path
     models_cfg = load_models_config(models_yaml_path)
 
     stt = make_stt(models_cfg, "stt")
@@ -74,9 +84,9 @@ async def main(cfg: dict, ready_file: pathlib.Path | None = None) -> None:
         frame_max_age_s       =float(cfg.get("frame_max_age_s",       2.0)),
         camera_on_timeout_s   =float(cfg.get("camera_on_timeout_s",  10.0)),
         camera_grace_s        =float(cfg.get("camera_grace_s",         5.0)),
-        silence_threshold     =float(cfg.get("silence_threshold",     0.01)),
         silence_duration      =float(cfg.get("silence_duration",      0.8)),
         min_speech            =float(cfg.get("min_speech",            0.3)),
+        silero_threshold      =float(cfg.get("silero_threshold",      0.5)),
     )
 
     loop = asyncio.get_running_loop()
@@ -126,7 +136,7 @@ def run() -> None:
         with open(ns.config) as f:
             cfg = yaml.safe_load(f) or {}
 
-    asyncio.run(main(cfg, ready_file=ns.ready_file))
+    asyncio.run(main(cfg, config_path=ns.config, ready_file=ns.ready_file))
 
 
 if __name__ == "__main__":

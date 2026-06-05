@@ -36,6 +36,27 @@ adapters). Always available even on a camera-less device/emulator.
 Builds on PR #172 (the `injectVideoFrame` API); not buildable in CI here —
 on-device verification is the gate.
 
+### 2026-06-04 — piper TTS smoke test: de-flake + dedicated voice-unavailable exit code
+
+`test_piper_tts_smoke` was failing intermittently in CI with an opaque
+"piper_tts_server exited early with code 1" and no further detail. Root
+cause: the server downloads the configured voice from HuggingFace on startup,
+and `_ensure_voice` only caught the "voice name is wrong" errors —
+a transient HF failure (timeout, 429, connection reset) propagated as an
+uncaught traceback and exit 1. The test then reported only the exit code
+because it never read the subprocess's captured output.
+
+Two fixes:
+- **Server**: `_ensure_voice` now catches any other download error and exits
+  with a dedicated `_EXIT_VOICE_UNAVAILABLE = 3` (also used for the offline
+  empty-cache case), distinct from exit 1 (genuine bad voice name / repo).
+  Operators get a clear single line instead of a raw traceback.
+- **Test**: `_wait_for_port` reads and surfaces the server's captured
+  stdout/stderr on early exit. Exit code 3 → `pytest.skip` (environmental,
+  retryable — restores the documented "skip cleanly when the voice can't be
+  obtained" contract); any other code → `pytest.fail` with the captured
+  output so real regressions are diagnosable in the CI log.
+
 ### 2026-06-03 — Removed on-demand camera mode; clients always stream
 
 Dropped the "camera on demand" feature across the stack. Clients now

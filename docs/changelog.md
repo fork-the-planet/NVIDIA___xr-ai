@@ -58,6 +58,51 @@ adapters). Always available even on a camera-less device/emulator.
 Builds on PR #172 (the `injectVideoFrame` API); not buildable in CI here —
 on-device verification is the gate.
 
+### 2026-06-04 — Multi-client isolation: each client talks only to the hub
+
+Two human clients sharing a room saw each other's data-channel messages,
+heard each other's microphones, and (on the pipecat voice path) could receive
+each other's agent answers. Three independent leaks, fixed at the layer each
+belongs to. All client changes are gated on `hubIdentity`
+(default `xr-hub-connector`, the connector's join identity); set it
+`null`/`nil` to restore the legacy whole-room behaviour.
+
+**1. Outbound data — publish-side (web/web-xr/android/iOS).** `send()` now
+addresses data to the hub participant only (`destinationIdentities` /
+`identities`), so a client's text/ping/custom messages never reach peers.
+
+**2. Inbound data + audio — subscribe-side (web/web-xr/android/iOS).** The
+`DataReceived` handler drops messages whose publisher is not the hub, and the
+room connects with auto-subscribe disabled + subscribes only to the hub
+participant's tracks (track-published event + a connect-time sweep). A client
+no longer receives or plays another participant's microphone — it subscribes
+to the hub's per-pid return-audio track only.
+
+**3. Agent return audio — per-participant routing (`xr-ai-pipecat`
+foundation).** The pipecat voice pipeline was per-pid on input (VAD/STT/brain
+keyed by participant) but collapsed to a single `_target_participant`
+(last-join-wins) on output: `XRMediaHubOutputTransport` nulled every frame's
+`transport_destination` and routed all TTS through the default sender, so
+participant A's spoken-query answer was published on participant B's
+return-audio track. Now a per-participant `MediaSender` is registered on
+`ParticipantJoinedFrame` (and lazily in `_handle_frame`), frames keep their
+`transport_destination = pid`, and `write_audio_frame` addresses the chunk at
+the frame's own pid (falling back to `_target_participant` only for
+unaddressed audio). Both pipecat samples (simple-vlm, xr-render-demo) inherit
+the fix. Covered by `test_output_transport_routes_audio_by_frame_pid_not_single_target`
+(fails pre-fix: both answers addressed to the last joiner).
+
+**Known follow-ups (not yet fixed):** within the pipecat foundation,
+`StreamingTtsProcessor`'s sentence buffer is still a single shared `_pending`
+(two simultaneous speakers' tokens can interleave), interruption is still
+global (`InterruptionFrame` → cancel-all rather than pid-scoped, so one
+participant's "stop"/supersede cancels another's in-flight response), and
+`UserStarted/StoppedSpeaking` frames are pid-less (speculative camera warmup
+fans to all joined pids). These degrade only under concurrent speech and are
+tracked separately. The native client edits (android/iOS) compile-verify
+pending an on-device build; web is syntax-checked and the foundation fix is
+unit-tested here.
+
 ### 2026-06-04 — Terminate the pid segment on return-traffic topics
 
 The connector subscribed to return traffic on `return_audio.{pid}`,
@@ -87,6 +132,7 @@ pre-fix code (`alice` over-receives `alice2`'s return data/audio/flush) and
 passes after. The LiveKit-transport enforcement layer
 (`destination_identities`, per-pid return tracks, subscribe permissions)
 remains without automated coverage — tracked separately.
+
 ### 2026-06-04 — piper TTS smoke test: de-flake + dedicated voice-unavailable exit code
 
 `test_piper_tts_smoke` was failing intermittently in CI with an opaque
@@ -234,7 +280,6 @@ of `system.txt`). Per `AGENTS.md` "Prompt-driven samples", the
 warnings surface at every run; `--strict-overlap` turns them into a
 CI-grade rc=2 failure. Clearing a warning means changing the prompt's
 worked example, not the case fixture.
-
 ### 2026-05-21 — `xr-ai-vad` is Silero-only; `xr-render-demo` migrated
 
 Dropped the adaptive-energy fallback path that shipped in the initial

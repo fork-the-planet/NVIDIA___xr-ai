@@ -9,6 +9,24 @@ Significant decisions, in reverse-chronological order. Update this whenever a
 non-trivial architectural or design decision is made so the rationale is
 preserved and not re-litigated.
 
+### 2026-06-05 — TokenServer: fail startup loudly on bind error; keep shutdown graceful
+
+`TokenServer` ran `self._server.serve()` directly as its task. uvicorn calls
+`sys.exit(1)` on a bind failure (e.g. port already in use), so the task ends
+with `SystemExit` (a `BaseException`); `stop()`'s `await self._task` then
+re-raised it into `LiveKitConnector.stop()`, aborting the remaining
+graceful-shutdown steps. Wrapped the task in a `_serve_safe()` coroutine that
+catches `SystemExit` and logs a clear "port in use?" error — mirroring the
+sibling `WebServer._serve_safe`, which already guards this. To stop a bind
+failure from looking healthy, `start()` now awaits the bind (polls
+`uvicorn.Server.started` until the serve task either binds or finishes) and
+raises `RuntimeError` if the server never bound within `_STARTUP_TIMEOUT_S` —
+the token server is the browser-facing auth/signaling entry point, so a dead
+endpoint must abort connector startup rather than silently swallow the error.
+`_serve_safe` also captures non-`SystemExit` serve failures (so the task's
+exception is always retrieved and `start()` chains the real cause), and the
+timeout path cancels the orphan serve task before raising. Fixes #192.
+
 ### 2026-06-05 — iOS sample: guard switchCamera against concurrent start/switch
 
 Follow-up to #200. `AppModel.switchCamera(to:)` re-invokes the backend's

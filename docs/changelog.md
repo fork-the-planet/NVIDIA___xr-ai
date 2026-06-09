@@ -64,6 +64,18 @@ timestamp into a long capture wait and add audio latency. The C++ LiveKit backen
 now preserves the StreamKit timestamp as API metadata and calls
 `AudioSource::captureFrame(frame)` so the SDK uses its realtime default timeout.
 
+### 2026-06-05 — Magpie TTS: honor the launcher's --ready-file contract
+
+The launcher injects `--ready-file <path>` into every spawned process and
+blocks in `_wait_ready` (no timeout) until that file appears or the process
+exits. Piper and STT touch it after their model loads; Magpie didn't — `run()`
+only registered `--config`, so `--ready-file` landed in the ignored unknowns
+and `_run` never created the file. Magpie then stays alive serving, so
+`proc.poll()` stays `None` too — the launcher deadlocked at startup on the
+Magpie TTS service. Mirrored piper/stt: register `--ready-file`, thread it
+into `_run`, and `ready_file.touch()` after `_ensure_loaded()` completes
+(before `server.serve()`). Fixes #191.
+
 ### 2026-06-05 — iOS: reset isCameraActive when a camera switch fails
 
 `AppModel.switchCamera(to:)` only ran on an already-active camera and, on a

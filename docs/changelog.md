@@ -63,6 +63,17 @@ StreamKit's `timestamp_us` through that parameter can turn an increasing media
 timestamp into a long capture wait and add audio latency. The C++ LiveKit backend
 now preserves the StreamKit timestamp as API metadata and calls
 `AudioSource::captureFrame(frame)` so the SDK uses its realtime default timeout.
+
+### 2026-06-05 — iOS: reset isCameraActive when a camera switch fails
+
+`AppModel.switchCamera(to:)` only ran on an already-active camera and, on a
+failed publish, set `lastError` but left `isCameraActive = true`. Because the
+LiveKit backend's `startCamera()` stops the previous track before publishing
+the new one, a publish failure mid-switch left nothing streaming while the UI
+still showed "Streaming" with a green status and a working Stop button. The
+`catch` now sets `isCameraActive = false`, matching the consistency that
+`startCamera()`/`stopCamera()` already maintain. Fixes #195.
+
 ### 2026-06-05 — piper voice fetch: catch LocalEntryNotFoundError before EntryNotFoundError
 
 Follow-up to #184. That PR added a dedicated `_EXIT_VOICE_UNAVAILABLE = 3`

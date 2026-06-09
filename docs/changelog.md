@@ -100,6 +100,19 @@ matching the teardown order already in `close()`. Triggered by a connector
 crash/reconnect that re-sends its registration while frames are held.
 Regression test: `test_connector_reregistration_releases_held_slots`. Fixes #197.
 
+### 2026-06-05 — Piper TTS: valid empty WAV on empty/whitespace input
+
+`_PiperBackend.synthesize` returned an HTTP 500 for empty/whitespace input.
+Piper's `synthesize_wav` sets the WAV format params only on the first
+synthesized chunk; empty input produces no chunks, so the params were never
+set and `wave.close()` raised `wave.Error: # channels not specified`, which
+propagated out of the `/v1/audio/speech` handler unhandled. `synthesize` now
+short-circuits empty/whitespace input to a valid, empty (silent) WAV — header
+params set, zero audio frames — matching the magpie backend (whose `sf.write`
+already emits a valid header for empty audio). The non-empty path is
+unchanged. Regression covered by the piper smoke test (`test_piper_tts_smoke`
+now also POSTs whitespace input and asserts a 200 + WAV header). Fixes #194.
+
 ### 2026-06-05 — piper voice fetch: catch LocalEntryNotFoundError before EntryNotFoundError
 
 Follow-up to #184. That PR added a dedicated `_EXIT_VOICE_UNAVAILABLE = 3`

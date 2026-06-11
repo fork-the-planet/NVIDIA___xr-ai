@@ -108,6 +108,7 @@ final class AppModel {
     /// Mirrors the web client's Agent panel; nil shows the "Waiting for agent..." placeholder.
     var agentResponse: String?
     var isAudioActive = false
+    private(set) var isAudioStarting = false
     var isCameraActive = false
     private var isCameraStarting = false
     var isConnecting = false
@@ -147,6 +148,7 @@ final class AppModel {
             self.connectionState = state
             if state == .disconnected {
                 self.isAudioActive = false
+                self.isAudioStarting = false
                 self.isCameraActive = false
                 self.agentStatus = nil
                 self.agentResponse = nil
@@ -198,17 +200,26 @@ final class AppModel {
         agentStatus = nil
         agentResponse = nil
         isAudioActive = false
+        isAudioStarting = false
         isCameraActive = false
     }
 
     // MARK: - Audio
 
     func startAudio() async {
+        guard !isAudioStarting, !isAudioActive else { return }
+        isAudioStarting = true
+        defer { isAudioStarting = false }
+
         do {
             try await session?.startAudio(config: AudioConfig(mode: audioMode))
             isAudioActive = true
         } catch {
-            lastError = error.localizedDescription
+            #if DEBUG
+            let ns = error as NSError
+            print("startAudio failed: \(type(of: error)) \(ns.domain) #\(ns.code) — \(error)")
+            #endif
+            lastError = "Microphone couldn’t start — please try again."
         }
     }
 

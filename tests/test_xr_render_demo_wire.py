@@ -661,9 +661,8 @@ def _make_perception_brain(transport, vlm: _FakeVLM):
         llm         = None,
         agent_llm   = None,
         vlm_service = vlm,
-        frame_max_age_s     = 60.0,   # generous so the seeded frame stays fresh
-        camera_on_timeout_s = 0.2,    # short — the no-frame test must not hang
-        camera_grace_s      = 0.05,
+        frame_max_age_s = 60.0,   # generous so the seeded frame stays fresh
+        frame_timeout_s = 0.2,    # short — the no-frame test must not hang
     )
 
 
@@ -724,7 +723,7 @@ async def test_perception_no_frame_yields_graceful_message() -> None:
     vlm = _FakeVLM()
     brain = _make_perception_brain(transport, vlm)
 
-    # No frame seeded → _wait_for_camera_frame times out (camera_on_timeout=0.2s).
+    # No frame seeded → _wait_for_frame times out (frame_timeout=0.2s).
     # Stub the MCP prefetch (None clients) and script the agent LLM to emit a
     # single look_at_current_frame tool call.
     async def _fake_call_mcp(_client, tool, _args, *, silent=False):
@@ -759,8 +758,8 @@ async def test_perception_no_frame_yields_graceful_message() -> None:
 
     # Graceful spoken message, not a hang or a generic "Done." fallback.
     assert answer == _proc._NO_FRAME_MSG
-    # The camera WAS turned on (startCamera sent) before giving up.
+    # Camera is always-on streaming — no startCamera/stopCamera messages sent.
     controls = [m for m in transport.sent if m.topic == "clientControl"]
-    assert any(b'"startCamera"' in m.data for m in controls)
+    assert not any(b'"startCamera"' in m.data for m in controls)
     # VLM was never reached — there was no frame to ask about.
     assert vlm.calls == []
